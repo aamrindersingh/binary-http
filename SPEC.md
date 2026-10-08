@@ -1,23 +1,30 @@
-# BHTTP/1 — a binary request/response protocol
+# BHTTP/1: a binary request/response protocol
 
-**Version:** 1 · **Author:** Amrinder Singh (24BCS10596) · implemented by `bserve` and `bcurl`
+**Version 1** · Amrinder Singh (24BCS10596) · reference implementations `bserve` and `bcurl`
 
-A minimal binary protocol for fetching files over one TCP connection. Everything a second
-implementer needs is here; the reference code is not required reading.
+Everything a second implementer needs is in this document; the reference code is not required
+reading. Why each field is the width it is, and what HTTP/2 does differently, is argued in
+[docs/why-these-widths.md](docs/why-these-widths.md). That file is commentary. This one is normative.
 
-All multi-byte integers are **unsigned, big-endian**. There is no padding anywhere.
+All multi-byte integers are unsigned and big-endian. There is no padding anywhere.
 
 ---
 
 ## 1. Connection
 
-A client opens **one** TCP connection and keeps it open. There is no handshake and no version byte,
-for the reason in §8. Either side ends the connection with `GOAWAY`.
+A client opens **one** TCP connection and keeps it open for every request it makes. There is no
+handshake and no version byte, for the reason in §8. Either side ends the connection with `GOAWAY`.
 
-Requests carry a **Request ID**; responses echo it. Correlation is by ID, not by order, so a server
-MAY answer out of order. Client-generated IDs **start at 1 and increase monotonically**. An ID MUST
-NOT be reused while a response for it is outstanding. **ID 0 is reserved for connection-level
-frames** (`GOAWAY`) and MUST NOT appear on a `REQUEST`.
+Every `REQUEST` carries a **Request ID** and its response echoes it, so correlation is by ID and not
+by arrival order: a server MAY answer out of order and a client MAY hold several requests in flight.
+
+Client IDs MUST start at 1 and increase by one per request. After `0xFFFFFF` they **wrap back to 1**,
+never to 0. An ID MUST NOT be reused while a response for it is outstanding, so a client reaching an
+ID it still has unanswered MUST wait for that response before sending. Since the connection cannot
+be replaced, wrapping is the only way this protocol survives running out of IDs, and §2 is where
+that width is argued.
+
+**ID 0 is reserved for connection-level frames** (`GOAWAY`); a `REQUEST` carrying ID 0 is a `400`.
 
 ---
 
@@ -37,44 +44,37 @@ Every frame begins with the same **8-byte** header.
 +---------------------------------------------------------------+
 ```
 
-| Field | Bits | Meaning |
-|---|---|---|
-| Length | 24 | payload bytes, **not** counting this header |
-| Type | 8 | §3 |
-| Flags | 8 | §3 |
-| Request ID | 24 | correlates a response to its request |
+| Field | Bits | Meaning | Width chosen because |
+|---|---|---|---|
+| Length | 24 | payload bytes, **not** counting this header | a receiver allocates on it and the sender is untrusted |
+| Type | 8 | §3 | smallest unit read without shift and mask |
+| Flags | 8 | §3 | separate, so a modifier cannot double the type table |
+| Request ID | 24 | correlates a response to its request | wrapping is legal, so this sets how often, not whether |
 
-### Defending the widths
+### Why these widths
 
-**Length is 24 bits because the width is a security control, not an aesthetic one.** A receiver
-reads this field and then decides how much memory to allocate, and the sender is an untrusted peer.
-At 32 bits a hostile client declares `0xFFFFFFFF` and asks me to reserve 4 GiB before it has proven
-anything. The cap has to live in the protocol, not in each implementation's good judgement. 24 bits
-caps a frame at 16 MiB, small enough to absorb and large enough that an ordinary file is one frame.
-16 bits is too small: a 64 KiB ceiling turns a 2 MB image into 32 frames, and every extra frame is
-another header, another read and another chance to get the state machine wrong. HTTP/2 reasons the
-same way, and goes further by defaulting the usable maximum to 16 KiB and making larger opt-in; §7
-adopts that.
+HTTP/2 chose 24 / 8 / 8 / 1+31 and got a 9-byte header. Three of those four are right, and the one
+that differs pays for features this protocol does not have.
 
-**Type is 8 bits**, the smallest unit a parser reads without masking. 256 types against the four
-defined here. A 4-bit type would share a byte with something else and every implementation would
-carry shift-and-mask code to save nothing.
+**Length is 24 bits because a width is a security control.** A receiver reads this field and then
+decides how much memory to allocate, on the word of a peer that has proven nothing yet. At 32 bits a
+hostile client declares `0xFFFFFFFF` and asks the receiver to reserve 4 GiB for eight bytes of
+effort. Put the ceiling in the field and every conforming implementation has it, including the
+careless one written next year; leave it to each parser and only the careful parsers have it. 16 bits
+would be safer still and is the wrong trade: a 64 KiB ceiling turns a 2 MB file into 32 frames, and
+every extra frame is another header, another read and another partial-read case to get wrong.
 
-**Flags are 8 bits and separate from Type**, so a boolean modifier does not multiply the type space.
-"`DATA`, and this is the last one" is one type with a flag, not a second type. That is why
-`END_STREAM` costs HTTP/2 one bit instead of doubling its frame table.
+**Request ID is 24 bits rather than 31** because HTTP/2 is solving a harder problem with those bits.
+It forbids reusing a stream identifier for the life of a connection and splits the space between
+odd client-initiated and even server-initiated IDs (RFC 9113 §5.1.1), so its width has to cover a
+whole connection's history with half of it unusable, and its stated remedy for exhaustion is to open
+a new connection. This protocol has no server push, so the space is not split, and §1 permits
+wrapping, so the width decides only how often a wrap happens rather than when the connection has to
+be abandoned. At 24 bits a wrap is hours of sustained traffic. Those bits are also not free: the
+reserved bit plus 31 is the byte that makes the HTTP/2 header 9 where this one is 8.
 
-**Request ID is 24 bits.** 16 bits (65,535) is reachable on a reused connection; 24 bits (16.7
-million) is not. HTTP/2 spends 31 bits plus a reserved bit because its stream IDs carry priority and
-server-push semantics this protocol does not have, and because it splits the space between
-client- and server-initiated streams. Those 7 extra bits are not free: they are what makes the
-HTTP/2 header 9 bytes.
-
-**The header is 8 bytes, not 9**, and the 24-bit Request ID is what buys the power of two. A
-fixed 8-byte header means header fields come out of one machine word and buffer arithmetic stays in
-powers of two. (It does **not** keep payloads aligned on the stream: after an 8-byte header and a
-97-byte payload the next frame starts at offset 105. Alignment does not survive the first
-odd-length payload, and claiming otherwise would be wrong.)
+Type, Flags, the 8-byte total and two smaller choices made the same way:
+[docs/why-these-widths.md](docs/why-these-widths.md).
 
 ---
 
@@ -82,25 +82,25 @@ odd-length payload, and claiming otherwise would be wrong.)
 
 | Type | Name | Direction | Payload |
 |---|---|---|---|
-| `0x01` | `REQUEST` | client → server | §5 |
-| `0x02` | `RESPONSE` | server → client | §6 |
+| `0x01` | `REQUEST` | client to server | §5 |
+| `0x02` | `RESPONSE` | server to client | §6 |
 | `0x03` | `DATA` | either | opaque bytes |
 | `0x04` | `GOAWAY` | either | §7, header Request ID MUST be 0 and MUST be ignored |
-| other | unknown | — | **MUST be skipped, §8** |
+| any other | unknown | either | **MUST be skipped, §8** |
 
 | Flag | Value | Applies to | Meaning |
 |---|---|---|---|
 | `END_MESSAGE` | `0x01` | `REQUEST`, `RESPONSE`, `DATA` | no further frames for this Request ID |
 
-Unassigned flag bits MUST be sent as 0 and **ignored** on receipt. Ignoring rather than rejecting is
-what lets version 2 add a flag without breaking version 1.
+Unassigned flag bits MUST be sent as 0 and MUST be **ignored** on receipt. Ignoring rather than
+rejecting is what lets version 2 add a flag without breaking version 1.
 
 ---
 
 ## 4. Header encoding
 
 HPACK's first two mechanisms and nothing more: a **static table** of the ten names this protocol
-actually sends, and **length-prefixed literals** for the rest.
+actually sends, and **length-prefixed literals** for everything else. No dynamic table, no Huffman.
 
 | # | Name | | # | Name |
 |---|---|---|---|---|
@@ -110,30 +110,24 @@ actually sends, and **length-prefixed literals** for the rest.
 | 4 | `user-agent` | | 9 | `date` |
 | 5 | `accept` | | 10 | `connection` |
 
-A header block is a count byte followed by that many entries:
+A header block is a count byte followed by exactly that many entries:
 
 ```
-indexed name:   1 i i i i i i i      i = table index, 1-127
+indexed name:   1 i i i i i i i      i = table index, 1 to 127
                 <u16 value length> <value bytes>
 
-literal name:   0 l l l l l l l      l = name length, 1-127
+literal name:   0 l l l l l l l      l = name length, 1 to 127
                 <name bytes> <u16 value length> <value bytes>
 ```
 
-Values are at most 65,535 bytes; literal names at most 127, which is ample for names under 30
-characters.
+Values are at most 65,535 bytes and literal names at most 127. Names are lowercase ASCII and MUST be
+compared case-insensitively.
 
 **The block MUST be consumed exactly.** A decoder reads exactly `Count` entries and MUST finish on
-the final byte of the block. Running out of bytes before `Count` entries, or having bytes left after
-them, is a `400` — a decoder that simply trusts `Count` and reads until it stops is wrong.
-
-A **literal name length of 0** (byte `0x00`) is invalid: `400`.
-
-An **unknown static index** (say 11, added by a later version) is `400`. This is the one place the
-protocol is deliberately unforgiving, because unlike a frame type an unknown index cannot be
-skipped: the decoder does not learn the name, so it cannot tell whether the header mattered.
-
-Names are lowercase ASCII and MUST be compared case-insensitively.
+the final byte of the block. Fewer bytes than `Count` promised is a `400`; bytes left over after
+them is also a `400`. So is a **literal name length of 0**, and so is an **unknown static index**
+such as 11 added by a later version. An unknown index is the one thing here a receiver may not skip
+over, because it never learns the name and so cannot tell whether the header mattered.
 
 ---
 
@@ -147,11 +141,8 @@ Names are lowercase ASCII and MUST be compared case-insensitively.
 +---------------+
 ```
 
-`:path` is an absolute path beginning with `/`, already percent-decoded by the sender. A `REQUEST`
-sets `END_MESSAGE` unless a body follows in `DATA` frames.
-
-The method is a number because there are nine of them and they never change. `"GET"` as a
-length-prefixed string costs five bytes to carry three bits.
+`:path` is an absolute path beginning with `/`, already percent-decoded by the sender. A missing
+`:path` is a `400`. A `REQUEST` sets `END_MESSAGE` unless a body follows in `DATA` frames.
 
 ---
 
@@ -165,19 +156,14 @@ length-prefixed string costs five bytes to carry three bits.
 +-------------------------------+
 ```
 
-The body follows in zero or more `DATA` frames with the same Request ID, the last setting
-`END_MESSAGE`. A `RESPONSE` with no body sets `END_MESSAGE` on itself.
+The body follows in zero or more `DATA` frames carrying the same Request ID, the last of them
+setting `END_MESSAGE`. A `RESPONSE` with no body sets `END_MESSAGE` on itself.
 
-**`END_MESSAGE` is authoritative for framing; `content-length` is advisory.** If they disagree the
-receiver MUST believe `END_MESSAGE` and MAY report the mismatch. A length header that the framing
-does not enforce is exactly the ambiguity that produced HTTP/1.1 request smuggling, so only one of
-them is allowed to be the truth.
+**`END_MESSAGE` is authoritative for framing and `content-length` is advisory.** If the two
+disagree a receiver MUST believe `END_MESSAGE` and MAY report the mismatch.
 
-**Status is a 16-bit integer, not a string.** HTTP/2 carries `:status` as ASCII because it had to
-stay mechanically translatable to HTTP/1.1; this protocol has no such obligation, so a status is two
-bytes and a comparison. A receiver that does not recognise a code MUST use the leading digit: `2xx`
-succeeded, `4xx` the sender was wrong, `5xx` the receiver was wrong. That is what lets version 2 add
-`418` without breaking anyone.
+**Status is a 16-bit integer, not a string.** A receiver that does not recognise a code MUST act on
+its leading digit: `2xx` succeeded, `4xx` the sender was wrong, `5xx` the receiver was wrong.
 
 | Status | When |
 |---|---|
@@ -186,7 +172,7 @@ succeeded, `4xx` the sender was wrong, `5xx` the receiver was wrong. That is wha
 | 403 | path resolved outside the document root |
 | 404 | no such file |
 | 405 | method other than GET |
-| 500 | server failed, e.g. could not read a file it had just stat'ed |
+| 500 | the receiver failed, for instance could not read a file it had just stat'ed |
 
 ---
 
@@ -200,37 +186,33 @@ succeeded, `4xx` the sender was wrong, `5xx` the receiver was wrong. That is wha
 +-------------------------------+
 ```
 
-The header Request ID of a `GOAWAY` MUST be 0. After sending one a sender MUST NOT send further
+The header Request ID of a `GOAWAY` MUST be 0. After sending one, a sender MUST NOT send further
 frames and SHOULD close once in-flight responses are written. A receiver MUST NOT send new requests
 after seeing one.
 
-| Limit a receiver MUST enforce | Default | Exceeded |
+| Limit a receiver MUST enforce | Default | When exceeded |
 |---|---|---|
-| frame payload | 16,384 | `GOAWAY` reason 2, close |
+| frame payload | 16,384 | `GOAWAY` reason 2, then close |
 | absolute maximum, by field width | 16,777,215 | unrepresentable |
 | header block | 8,192 | `400` |
 | `:path` | 1,024 | `400` |
 
-The 16 KiB default sits far below the 24-bit ceiling on purpose: the field width is the hard limit
-an attacker cannot exceed, the default is the soft limit an ordinary peer will not. A later version
-can raise the default by negotiation with no wire change.
+A receiver MUST check the declared `Length` **before** reading or allocating the payload. The 16 KiB
+default sits far below the 24-bit ceiling on purpose: the width is the hard limit an attacker cannot
+exceed, the default is the soft limit an honest peer will not reach.
 
 ---
 
 ## 8. Forward compatibility
 
 > **A receiver meeting a frame `Type` it does not recognise MUST read and discard exactly `Length`
-> bytes of payload and continue. It MUST NOT close the connection, MUST NOT reply with an error, and
-> MUST NOT treat the frame as malformed.**
+> bytes of payload and continue. It MUST NOT close the connection, MUST NOT reply with an error,
+> and MUST NOT treat the frame as malformed.**
 
-This is why there is no version number on the wire. A version 2 sender adds a frame type and a
-version 1 receiver steps over it, which is cheaper and more honest than a version byte every
-implementation must agree on the meaning of.
-
-The rule is only implementable because of §2: `Length` sits at a **fixed offset in a fixed-size
-header**, ahead of anything type-specific. A receiver can always find where a frame ends without
-understanding it. A format that put a variable-length field before the length, or derived the length
-from the type, could not offer this and would be stuck at version 1 forever.
+This is why there is no version byte on the wire: a version 2 sender adds a frame type and a version
+1 receiver steps over it. It is only implementable because of §2. `Length` is at a fixed offset in a
+fixed-size header, ahead of anything type-specific, so a receiver can always find where a frame ends
+without understanding it.
 
 The same principle covers unassigned flag bits (§3). It deliberately does **not** cover unknown
 static indices (§4), where skipping is impossible.
@@ -240,21 +222,19 @@ static indices (§4), where skipping is impossible.
 ## 9. A complete exchange
 
 ```
-C→S  REQUEST   id=1  END_MESSAGE    method=GET
-                                    :path = "/index.html"      index 2
-                                    host  = "localhost:9000"   index 3
+C->S  REQUEST   id=1  END_MESSAGE    method=GET                    payload 33 bytes
+                                     :path = "/index.html"         index 2
+                                     host  = "localhost:9000"      index 3
 
-S→C  RESPONSE  id=1  —              status=200
-                                    content-type   = "text/html"  index 7
-                                    content-length = "97"         index 6
-                                    server         = "bserve/1"   index 8
+S->C  RESPONSE  id=1  (no flags)     status=200                    payload 63 bytes
+                                     content-type   = "text/html"  index 7
+                                     content-length = "94"         index 6
+                                     server         = "bserve/1"   index 8
 
-S→C  DATA      id=1  END_MESSAGE    <97 bytes>
+S->C  DATA      id=1  END_MESSAGE    <94 bytes of file>            payload 94 bytes
 ```
 
-Byte-level annotation of exactly this exchange, captured off the wire:
-[docs/annotated-hexdump.md](docs/annotated-hexdump.md).
+Three frames, 24 bytes of header, 190 bytes of payload.
 
-The conformance suite in [tests/](tests) exercises every MUST above, including §8 in **both
-directions** by sending a type `0x7E` frame neither implementation defines and asserting the peer
-carries on.
+Every byte of exactly this exchange, captured off the wire and annotated:
+[docs/annotated-hexdump.md](docs/annotated-hexdump.md).

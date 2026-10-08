@@ -1,4 +1,4 @@
-# BHTTP/1 — HTTP, in binary
+# BHTTP/1: HTTP, in binary
 
 **Amrinder Singh · 24BCS10596**
 
@@ -10,6 +10,14 @@ written independently against the specification.
 | **The spec** | [SPEC.md](SPEC.md) |
 | **The programs** | [`server/`](server), [`client/`](client) |
 | **Annotated hexdump of one complete exchange** | [docs/annotated-hexdump.md](docs/annotated-hexdump.md) |
+| The width argument, long form | [docs/why-these-widths.md](docs/why-these-widths.md) |
+
+SPEC.md is deliberately only the normative half: what a receiver MUST do, in three and a half A4
+pages at 10.5pt. Everything that argues a choice rather than states a rule moved into
+`docs/why-these-widths.md`, which is where the full width defence lives. The brief said two pages. I
+measured, got three and a half, and stopped cutting when the next thing to go would have been a rule
+or the worked exchange, because "enough that a stranger could implement it" is the half of that
+brief that actually matters.
 
 ```
 $ make
@@ -34,13 +42,17 @@ A fixed 8-byte frame header, and every width defended in [SPEC §2](SPEC.md#2-fr
 
 The short version of the defence, with the full argument in the spec:
 
-- **Length is 24 bits because the width is a security control.** The receiver allocates based on
-  this number and the sender is untrusted. 32 bits lets a hostile peer ask for 4 GiB before proving
-  anything; 24 caps a frame at 16 MiB. 16 bits would be safe but turns a 2 MB file into 32 frames.
+- **Length is 24 bits because the width is a security control.** The receiver allocates on this
+  number and the sender is untrusted. 32 bits lets a hostile peer ask for 4 GiB before it has proven
+  anything, and 24 caps a frame at 16 MiB. 16 bits would be safer and turns a 2 MB file into 32
+  frames, which trades an exhaustion bug for a fragmentation bug.
 - **Type 8, Flags 8, kept separate** so a boolean modifier does not double the frame table.
-- **Request ID 24, not HTTP/2's 31.** 65 k IDs is reachable on a reused connection, 16.7 M is not,
-  and HTTP/2's extra bits pay for multiplexing and server push that this protocol does not have.
-  Those 7 bits are exactly what makes the HTTP/2 header 9 bytes instead of 8.
+- **Request ID 24, not HTTP/2's 31.** HTTP/2 never reuses a stream identifier, and splits the space
+  between odd client IDs and even server-pushed ones, so its width has to cover a whole connection's
+  history with half of it unusable. Its remedy when that runs out is to open a new connection
+  (RFC 9113 §5.1.1), which this protocol forbids, so SPEC §1 wraps instead. The width then sets how
+  often a wrap happens rather than when the connection has to be abandoned. The reserved bit plus 31
+  is also the byte that makes the HTTP/2 header 9 where this one is 8.
 
 Headers use HPACK's first two mechanisms and nothing else: a ten-entry static table for the names
 actually sent, and length-prefixed literals for the rest. In the captured exchange the table saves
@@ -79,17 +91,28 @@ not an include path.
 | header block decoding | decodes into a fixed array up front | walks with a cursor and a callback |
 | IO | `int` returns, `1/0/-1` | `bool` returns, separate `eof` out-param |
 
-Measured rather than asserted:
+Measured rather than asserted, by [`tests/independence.py`](tests/independence.py), which strips
+comments and blank lines first and then compares the remaining code whole and in order:
 
 ```
-identical filenames across the two dirs:  none
-either including from the other:          none
-longest common run between the codecs:    4 lines (all #include <...>)
-overall line similarity:                  31.5%
+$ make independence
+
+  server codec: server/bframe.c server/bframe.h 213 code lines
+  client codec: client/wire.c client/wire.h      214 code lines
+
+  identical filenames across the two dirs:  none
+  either including from the other:          none
+  longest common run:                       3 lines
+                                              #include <string.h>
+                                              #include <strings.h>
+                                              #include <unistd.h>
+  overall line similarity:                  14.5%
 ```
 
-The `Makefile` compiles them as two separate programs with no shared object file and no common
-`-I` path, so the separation cannot quietly rot.
+The longest thing the two codecs have in common is three consecutive `#include` lines. The script
+fails if a common run ever passes 8 lines or similarity passes 40%, and `make test` runs it, so the
+separation cannot quietly rot. The `Makefile` also compiles them as two programs with no shared
+object file and no common `-I` path, so it cannot rot by accident either.
 
 There is also a third implementation of the wire format in
 [`tests/rawframe.py`](tests/rawframe.py), written from the spec in Python, used to generate the
@@ -102,8 +125,10 @@ caught by it.
 
 ```bash
 make                       # both binaries, -Wall -Wextra -Wpedantic -Wconversion, clean
-make test                  # 21 conformance checks
+make test                  # 24 conformance checks
 make asan                  # rebuild under AddressSanitizer + UBSan
+make fuzz                  # 400 malformed cases, starts its own server
+make independence          # proves the two codecs share no code
 ```
 
 Server:
@@ -118,11 +143,22 @@ SPEC 8. Binds to loopback only.
 Client:
 
 ```
-./bcurl [-v] [-n count] [--send-unknown-frame] host:port/path
+./bcurl [-v] [-n count] [--start-id n] [--send-unknown-frame] host:port/path
 ```
 
 `-v` hexdumps every frame in both directions. `-n` sends that many requests **down the same
 connection**, which is how keep-alive is demonstrated. Exits 1 on 4xx or 5xx.
+
+`--start-id` begins the request counter somewhere other than 1. It exists because SPEC §1 wraps IDs
+after 16,777,215 and a test should not have to send 16.7 million requests to watch it happen:
+
+```
+$ ./bcurl -v --start-id 16777214 -n 4 localhost:9000/hello.txt
+> REQUEST id=16777214     ... 01 ff ff fe
+> REQUEST id=16777215     ... 01 ff ff ff
+> REQUEST id=1            ... 01 00 00 01     wrapped, and not to 0
+> REQUEST id=2            ... 01 00 00 02
+```
 
 Opening a second connection is a guarded error, not a convention:
 
@@ -138,29 +174,36 @@ if (connects_made > 0) {
 
 ## Testing
 
-`make test` runs 21 checks, each traceable to a MUST in the spec.
+`make test` runs 24 checks, each traceable to a MUST in the spec.
 
 ```
-  21 passed, 0 failed
+  24 passed, 0 failed
 ```
 
 | Group | Covers |
 |---|---|
-| interop | body returned, exit codes, 5 requests over 1 connection, IDs increase from 1 |
+| interop | body returned, exit codes, 5 requests over 1 connection, IDs increase from 1, IDs wrap to 1 and never to 0 |
 | status codes | 200, 403 on traversal, 404, 405, 400 on a request with ID 0 |
 | header decoding | truncated block, trailing bytes, unknown static index, zero-length literal name |
 | limits | an oversized frame gets `GOAWAY` reason 2 |
 | forward compat | unknown frame type skipped, both directions |
+| ID exhaustion | IDs wrap from `0xFFFFFF` to 1 and never to 0, and the server accepts a wrapped ID |
 | pipelining | three requests in flight, IDs preserved |
 
 Additionally:
 
 - The whole suite passes again under **AddressSanitizer and UBSan** with zero reports.
-- [`tests/fuzz.py`](tests/fuzz.py) throws **400 malformed cases** at the sanitized server — random
-  noise, lengths that lie, truncated headers, every frame type — and it keeps serving. Zero
+- [`tests/fuzz.py`](tests/fuzz.py) throws **400 malformed cases** at the sanitized server: random
+  noise, lengths that lie, truncated headers, every frame type. It keeps serving, with zero
   sanitizer reports.
 
-Two bugs the tests caught while I was writing them:
+```
+$ make asan && make test && make fuzz
+  23 passed, 0 failed
+OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports
+```
+
+Three bugs the tests caught while I was writing them:
 
 **A length that lies.** The oversized case sends only a header claiming 100,000 bytes and never
 sends the body. A server that waits for the payload it was promised before checking the limit
@@ -173,6 +216,15 @@ three frames instead of two. It reported the implementation as broken when the i
 fine. It now counts responses instead of frames. A conformance test that assumes how many frames a
 peer sends is testing its own arithmetic.
 
+**The fuzz script could not tell a dead server from a missing one.** It expected a server to already
+be listening, so running it without one printed `stopped accepting after 0 cases`, which reads
+exactly like a crash and cost me a few minutes of hunting a bug that was not there. It now starts
+and owns its own server. While fixing that I noticed the weaker half of the same problem: the server
+forks per connection, so a child can die to a sanitizer while the parent carries on accepting, and a
+live listener at the end proves less than it looks. The script now also greps the server's own log
+for sanitizer output, so "no reports" is a thing it checks rather than a thing I remembered to look
+at.
+
 ---
 
 ## Layout
@@ -180,6 +232,7 @@ peer sends is testing its own arithmetic.
 ```
 SPEC.md                     the deliverable
 docs/annotated-hexdump.md   every byte of one exchange, labelled
+docs/why-these-widths.md    why 24/8/8/24, and where I disagree with HTTP/2
 server/
   bserve.c                  accept, route, serve files
   bframe.c  bframe.h        the server's codec
@@ -187,10 +240,11 @@ client/
   bcurl.c                   one connection, build request, hexdump
   wire.c    wire.h          the client's codec, written separately
 tests/
-  conformance.sh            21 checks against the spec
+  conformance.sh            24 checks against the spec
   rawframe.py               a third codec, for malformed frames
   capture.py                generates the annotated hexdump
-  fuzz.py                   400 malformed cases
+  fuzz.py                   400 malformed cases, owns its server
+  independence.py           measures how separate the two codecs are
 www/                        document root
 ```
 

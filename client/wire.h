@@ -32,6 +32,10 @@
 
 #define FLAG_END_MESSAGE 0x01
 
+/* SPEC 1: IDs run 1..WIRE_MAX_REQ_ID and then wrap to 1. 0 is reserved
+ * for connection-level frames, so it is never a request ID. */
+#define WIRE_MAX_REQ_ID 0xFFFFFFu
+
 /* SPEC 5 */
 #define METHOD_GET 1
 

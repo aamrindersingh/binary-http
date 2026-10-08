@@ -65,6 +65,13 @@ IDS=$(./bcurl -v -n 3 "localhost:$PORT/hello.txt" 2>&1 >/dev/null \
       | grep -o 'REQUEST id=[0-9]*' | grep -o '[0-9]*' | tr '\n' ',' | sed 's/,$//')
 check "request IDs increase from 1" "1,2,3" "$IDS" "SPEC 1"
 
+WRAP=$(./bcurl -v --start-id 16777214 -n 4 "localhost:$PORT/hello.txt" 2>&1 >/dev/null \
+       | grep -o 'REQUEST id=[0-9]*' | grep -o '[0-9]*' | tr '\n' ',' | sed 's/,$//')
+check "IDs wrap to 1, not to 0" "16777214,16777215,1,2" "$WRAP" "SPEC 1"
+
+./bcurl --start-id 16777215 -n 2 "localhost:$PORT/hello.txt" >/dev/null 2>&1
+check "and the server accepts a wrapped ID" "0" "$?" "SPEC 1"
+
 echo
 echo "status codes"
 for c in ok:200 traversal:403 bad-method:405 no-path:400 request-id-zero:400; do
@@ -110,6 +117,11 @@ echo
 echo "pipelining"
 got=$(python3 tests/rawframe.py "$PORT" pipelined 2>/dev/null)
 check "3 in flight, IDs preserved" "1,2,3" "$got" "SPEC 1"
+
+echo
+echo "independence of the two codecs"
+python3 tests/independence.py >/dev/null 2>&1
+check "server and client share no code" "0" "$?" "README"
 
 echo
 printf '  %d passed, %d failed\n\n' "$PASS" "$FAIL"

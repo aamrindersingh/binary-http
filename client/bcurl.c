@@ -126,6 +126,7 @@ int main(int argc, char **argv)
     const char *url          = NULL;
     int         send_unknown = 0;
     int         repeat       = 1; /* requests to send on the one connection */
+    uint32_t    first_id     = 1; /* SPEC 1: client IDs start at 1 */
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-v")) verbose = 1;
@@ -135,13 +136,30 @@ int main(int argc, char **argv)
         /* -n N sends N requests down the SAME connection. Proves the
          * server keeps it open, and proves we never dial twice. */
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) repeat = atoi(argv[++i]);
+        /* --start-id N begins the ID counter at N instead of 1. The only
+         * reason it exists is that the SPEC 1 wrap happens after 16.7
+         * million requests, and a test should not have to send 16.7
+         * million requests to watch it happen. */
+        else if (!strcmp(argv[i], "--start-id") && i + 1 < argc)
+            first_id = (uint32_t)strtoul(argv[++i], NULL, 10);
         else url = argv[i];
     }
 
     if (!url) {
         fprintf(stderr,
-                "usage: bcurl [-v] [-n count] [--send-unknown-frame] "
-                "host:port/path\n");
+                "usage: bcurl [-v] [-n count] [--start-id n] "
+                "[--send-unknown-frame] host:port/path\n");
+        return 2;
+    }
+
+    if (repeat < 1) {
+        fprintf(stderr, "bcurl: -n must be at least 1\n");
+        return 2;
+    }
+
+    if (first_id < 1 || first_id > WIRE_MAX_REQ_ID) {
+        fprintf(stderr, "bcurl: --start-id must be 1..%u; 0 is reserved for "
+                        "connection-level frames\n", WIRE_MAX_REQ_ID);
         return 2;
     }
 
@@ -175,8 +193,16 @@ int main(int argc, char **argv)
     int exit_code = 0;
 
     /* One iteration per request, all down the same fd. SPEC 1: IDs start
-     * at 1 and increase monotonically. */
-    for (uint32_t req_id = 1; req_id <= (uint32_t)repeat; req_id++) {
+     * at 1, increase by one, and wrap back to 1 after WIRE_MAX_REQ_ID.
+     *
+     * The wrap is not theoretical housekeeping. wr_u24 writes the low 24
+     * bits, so without it request 16,777,216 would go out as ID 0, which
+     * SPEC 1 reserves for GOAWAY and the server answers with 400. The
+     * spec forbids opening a second connection, so wrapping is the only
+     * thing a client is allowed to do when it runs out of IDs. */
+    for (int sent = 0; sent < repeat; sent++) {
+        uint64_t n      = (uint64_t)first_id - 1u + (uint64_t)sent;
+        uint32_t req_id = (uint32_t)(n % WIRE_MAX_REQ_ID) + 1u;
 
     /* ---- build the REQUEST, SPEC 5 ---- */
     uint8_t payload[WIRE_HBLOCK_MAX + 1];

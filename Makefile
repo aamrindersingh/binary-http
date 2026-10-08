@@ -25,8 +25,16 @@ asan: clean all
 test: all
 	./tests/conformance.sh
 
+# Starts its own server, so this works straight after `make asan`.
+fuzz: all
+	python3 tests/fuzz.py
+
+# Checks the two codecs have not started sharing code.
+independence:
+	@python3 tests/independence.py
+
 clean:
 	rm -f bserve bcurl
-	rm -rf *.dSYM tests/tmp
+	rm -rf *.dSYM tests/tmp tests/*.log
 
-.PHONY: all asan test clean
+.PHONY: all asan test fuzz independence clean

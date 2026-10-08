@@ -7,8 +7,8 @@ section of [SPEC.md](../SPEC.md) that defines it.
 Regenerate with:
 
 ```bash
-make && ./bserve ./www 9414 &
-python3 tests/capture.py 9414 /index.html
+make && ./bserve ./www 9000 &
+python3 tests/capture.py 9000 /index.html
 ```
 
 Offsets restart at 0 for each frame. The `Length` in a frame header counts the payload only, so a
@@ -33,7 +33,7 @@ C->S REQUEST payload  (SPEC 5)
   000d  2f 69 6e 64 65 78 2e 68 74 6d 6c   value = "/index.html"
   0018  83                           0x83  indexed name 3 = host
   0019  00 0e                        value length = 14  (u16)
-  001b  6c 6f 63 61 6c 68 6f 73 74 3a 39 34 31 34   value = "localhost:9414"
+  001b  6c 6f 63 61 6c 68 6f 73 74 3a 39 30 30 30   value = "localhost:9000"
 
 ## Response: server to client
 
@@ -57,7 +57,7 @@ S->C RESPONSE payload  (SPEC 6)
   001f  62 73 65 72 76 65 2f 31      value = "bserve/1"
   0027  89                           0x89  indexed name 9 = date
   0028  00 1d                        value length = 29  (u16)
-  002a  54 68 75 2c 20 30 38 20 4f 63 74 20 32 30 32 36 20 31 34 3a 30 39 3a 35 36 20 47 4d 54   value = "Thu, 08 Oct 2026 14:09:56 GMT"
+  002a  54 68 75 2c 20 30 38 20 4f 63 74 20 32 30 32 36 20 31 34 3a 34 30 3a 34 33 20 47 4d 54   value = "Thu, 08 Oct 2026 14:40:43 GMT"
 
 S->C frame header  (SPEC 2, always 8 bytes)
   0000  00 00 5e                   Length = 94        payload bytes, 24 bits
@@ -91,5 +91,5 @@ agreement. SPEC 6 makes `END_MESSAGE` authoritative and `content-length` advisor
 flags on the DATA frame are `0x01`.
 
 **The request is 41 bytes on the wire** (8 header + 33 payload) to express what
-`GET /index.html HTTP/1.1\r\nHost: localhost:9414\r\n\r\n` needs 52 bytes for, without any
+`GET /index.html HTTP/1.1\r\nHost: localhost:9000\r\n\r\n` needs 52 bytes for, without any
 compression beyond the ten-entry static table.
