@@ -79,9 +79,9 @@ receivers validate strictly is a flags field that can never be extended.
 
 ## Request ID: 24 bits, where I part company with HTTP/2
 
-HTTP/2 spends a reserved bit plus 31 bits of Stream ID. I spend 24, and the whole header is a byte
-shorter. The question is what the extra byte is buying, and the answer is that HTTP/2 is solving a
-harder problem with it.
+HTTP/2 spends a reserved bit plus 31 bits of Stream ID, which is four bytes. I spend three, and the
+whole header is a byte shorter for it. The question is what that byte is buying, and the answer is
+that HTTP/2 is solving a harder problem with it.
 
 RFC 9113 §5.1.1 sets three rules I do not have to live with:
 
@@ -99,18 +99,29 @@ that stays open, so "open another one" is not an escape I am allowed to use. Exh
 handled on the connection or not at all, which is why SPEC §1 states a wrap rule outright: after
 `0xFFFFFF` the next ID is 1, never 0, and an ID in use is not reused until its response arrives.
 
-Once wrapping is legal the width stops being a deadline and becomes a frequency. This is worth being
-precise about, because the tempting version of this argument is wrong. 24 bits is **not** a number
-nobody reaches. At a sustained 300 requests per second, 2^24 IDs last about 15 and a half hours, and
-a connection held open for a day does wrap. The honest claim is narrower: the width sets how often a
-client hits the wrap check, and the wrap check is correct whenever it fires.
+Once wrapping is legal the width stops being a deadline. It is worth being precise about what it
+becomes, because the tempting version of this argument is wrong. 24 bits is **not** a number nobody
+reaches: at a sustained 300 requests per second, 2^24 IDs are used up in about 15 and a half hours,
+so a connection held open for a day does wrap, and wrapping is routine rather than exceptional.
 
-So why not 16 bits, if wrapping is safe anyway? Because the wrap is only safe while nothing is
-outstanding at the ID being reused, and that is a real constraint, not a formality. At 65,536 IDs the
-same 300 requests per second wraps every three and a half minutes, and on every wrap a client with
-long-running requests in flight has to stall and wait for one to come back. At 24 bits that wait
-arrives twice a day. Same rule, same correctness, three orders of magnitude less often, and the bits
-were going spare in an 8-byte header regardless.
+What the width actually buys is **how long a single request may stay outstanding before it blocks
+new ones**. A wrap is free unless the specific ID being reused is still unanswered, and that only
+happens when one request has been in flight for an entire cycle. So the cycle time is the budget for
+the slowest request on the connection:
+
+| Width | IDs | One cycle at 300 req/s | A request can be outstanding for |
+|---|---|---|---|
+| 16 bits | 65,536 | about 3.6 minutes | under 3.6 minutes |
+| 24 bits | 16,777,216 | about 15.5 hours | under 15.5 hours |
+
+That is the argument against 16 bits, and it is a practical one rather than a counting exercise.
+Three and a half minutes is well inside the range of things that really happen: a slow client on a
+bad link, a large file, a request deliberately held open. A protocol where the server taking four
+minutes to answer stalls the client's next request is a protocol with a timeout baked into its frame
+header. 24 bits moves that limit to most of a day, which nothing reasonable reaches.
+
+256 times the headroom, for bits that were spare in an 8-byte header anyway. That is the whole
+trade.
 
 One claim I removed while checking it: I had written that HTTP/2 stream IDs carry priority
 relationships, and that would have been an argument for the width. It does not hold up. Priority was

@@ -12,9 +12,10 @@ written independently against the specification.
 | **Annotated hexdump of one complete exchange** | [docs/annotated-hexdump.md](docs/annotated-hexdump.md) |
 | The width argument, long form | [docs/why-these-widths.md](docs/why-these-widths.md) |
 
-SPEC.md is deliberately only the normative half: what a receiver MUST do, in three and a half A4
-pages at 10.5pt. Everything that argues a choice rather than states a rule moved into
-`docs/why-these-widths.md`, which is where the full width defence lives. The brief said two pages. I
+SPEC.md is mostly normative: what a receiver MUST do, in three and a half A4 pages at 10.5pt. The
+exception is §2, which carries a short defence of each field width, because defending them is part
+of what the spec was asked to do. The long form of that argument, and everything else that explains
+a choice rather than stating a rule, is in `docs/why-these-widths.md`. The brief said two pages. I
 measured, got three and a half, and stopped cutting when the next thing to go would have been a rule
 or the worked exchange, because "enough that a stranger could implement it" is the half of that
 brief that actually matters.
@@ -51,8 +52,9 @@ The short version of the defence, with the full argument in the spec:
   between odd client IDs and even server-pushed ones, so its width has to cover a whole connection's
   history with half of it unusable. Its remedy when that runs out is to open a new connection
   (RFC 9113 §5.1.1), which this protocol forbids, so SPEC §1 wraps instead. The width then sets how
-  often a wrap happens rather than when the connection has to be abandoned. The reserved bit plus 31
-  is also the byte that makes the HTTP/2 header 9 where this one is 8.
+  often a wrap happens rather than when the connection has to be abandoned. Those bits are not free
+  either: a reserved bit plus 31 is four bytes where this ID is three, and that one byte is the
+  difference between a 9-byte header and an 8-byte one.
 
 Headers use HPACK's first two mechanisms and nothing else: a ten-entry static table for the names
 actually sent, and length-prefixed literals for the rest. In the captured exchange the table saves
@@ -98,7 +100,7 @@ comments and blank lines first and then compares the remaining code whole and in
 $ make independence
 
   server codec: server/bframe.c server/bframe.h 213 code lines
-  client codec: client/wire.c client/wire.h      214 code lines
+  client codec: client/wire.c client/wire.h  214 code lines
 
   identical filenames across the two dirs:  none
   either including from the other:          none
@@ -149,16 +151,28 @@ Client:
 `-v` hexdumps every frame in both directions. `-n` sends that many requests **down the same
 connection**, which is how keep-alive is demonstrated. Exits 1 on 4xx or 5xx.
 
-`--start-id` begins the request counter somewhere other than 1. It exists because SPEC §1 wraps IDs
-after 16,777,215 and a test should not have to send 16.7 million requests to watch it happen:
+`--start-id` begins the request counter somewhere other than 1, which SPEC §1 says a client MUST NOT
+do. It is a test affordance like the server's `--inject-unknown`, and it exists because §1 wraps IDs
+after 16,777,215 and a test should not have to send 16.7 million requests to watch that happen:
 
 ```
-$ ./bcurl -v --start-id 16777214 -n 4 localhost:9000/hello.txt
-> REQUEST id=16777214     ... 01 ff ff fe
-> REQUEST id=16777215     ... 01 ff ff ff
-> REQUEST id=1            ... 01 00 00 01     wrapped, and not to 0
-> REQUEST id=2            ... 01 00 00 02
+$ ./bcurl -v --start-id 16777214 -n 4 localhost:9000/hello.txt >/dev/null
+> REQUEST id=16777214 END_MESSAGE  GET /hello.txt
+>  header (8 bytes)
+  0000  00 00 30 01 01 ff ff fe                           |..0.....|
+> REQUEST id=16777215 END_MESSAGE  GET /hello.txt
+>  header (8 bytes)
+  0000  00 00 30 01 01 ff ff ff                           |..0.....|
+> REQUEST id=1 END_MESSAGE  GET /hello.txt
+>  header (8 bytes)
+  0000  00 00 30 01 01 00 00 01                           |..0.....|
+> REQUEST id=2 END_MESSAGE  GET /hello.txt
+>  header (8 bytes)
+  0000  00 00 30 01 01 00 00 02                           |..0.....|
 ```
+
+The last three bytes of each header are the Request ID. It goes `ff ff ff` and then `00 00 01`,
+never `00 00 00`, because ID 0 is reserved for `GOAWAY`.
 
 Opening a second connection is a guarded error, not a convention:
 
@@ -174,7 +188,7 @@ if (connects_made > 0) {
 
 ## Testing
 
-`make test` runs 24 checks, each traceable to a MUST in the spec.
+`make test` runs 24 checks: 23 traceable to a MUST in the spec, plus the independence check below.
 
 ```
   24 passed, 0 failed
@@ -188,6 +202,7 @@ if (connects_made > 0) {
 | limits | an oversized frame gets `GOAWAY` reason 2 |
 | forward compat | unknown frame type skipped, both directions |
 | ID exhaustion | IDs wrap from `0xFFFFFF` to 1 and never to 0, and the server accepts a wrapped ID |
+| independence | the two codecs still share no code, by `tests/independence.py` |
 | pipelining | three requests in flight, IDs preserved |
 
 Additionally:
@@ -199,8 +214,9 @@ Additionally:
 
 ```
 $ make asan && make test && make fuzz
-  23 passed, 0 failed
-OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports
+  24 passed, 0 failed
+OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports in
+tests/fuzz-server.log
 ```
 
 Three bugs the tests caught while I was writing them:

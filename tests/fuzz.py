@@ -23,6 +23,8 @@ random.seed(20261008)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG  = os.path.join(ROOT, "tests", "fuzz-server.log")
+# Printed instead of LOG, so the output is the same on anyone's machine.
+REL  = os.path.join("tests", "fuzz-server.log")
 
 if not os.access(os.path.join(ROOT, "bserve"), os.X_OK):
     sys.exit("build first: make asan")
@@ -37,7 +39,7 @@ for _ in range(50):                      # wait for the listener
         break
     except OSError:
         if srv.poll() is not None:
-            sys.exit("server exited before fuzzing started, see " + LOG)
+            sys.exit("server exited before fuzzing started, see " + REL)
         time.sleep(0.1)
 else:
     srv.kill()
@@ -66,7 +68,7 @@ for i in range(N):
     except OSError:
         why = ("the server process exited (code %s)" % srv.returncode
                if srv.poll() is not None else "it stopped accepting")
-        finish(1, "FAIL after %d cases: %s. See %s" % (i, why, LOG))
+        finish(1, "FAIL after %d cases: %s. See %s" % (i, why, REL))
 
     mode = i % 5
     if mode == 0:                                   # pure noise
@@ -99,7 +101,7 @@ time.sleep(0.3)
 try:
     socket.create_connection(("127.0.0.1", PORT), timeout=2).close()
 except OSError:
-    finish(1, "FAIL: server is dead after %d cases. See %s" % (sent, LOG))
+    finish(1, "FAIL: server is dead after %d cases. See %s" % (sent, REL))
 
 # A forked child can die to a sanitizer while the parent keeps accepting,
 # so a live listener on its own proves nothing. Read the log.
@@ -113,7 +115,7 @@ hits = sorted({m for m in MARKERS if m in text})
 
 if hits:
     finish(1, "FAIL: %d cases sent, but the server log reports %s. See %s"
-              % (sent, ", ".join(hits), LOG))
+              % (sent, ", ".join(hits), REL))
 
 finish(0, "OK: %d cases sent, %d refused mid-write, server still accepting, "
-          "no sanitizer reports in %s" % (sent, refused, LOG))
+          "no sanitizer reports in %s" % (sent, refused, REL))

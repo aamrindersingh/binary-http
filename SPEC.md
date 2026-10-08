@@ -3,8 +3,10 @@
 **Version 1** · Amrinder Singh (24BCS10596) · reference implementations `bserve` and `bcurl`
 
 Everything a second implementer needs is in this document; the reference code is not required
-reading. Why each field is the width it is, and what HTTP/2 does differently, is argued in
-[docs/why-these-widths.md](docs/why-these-widths.md). That file is commentary. This one is normative.
+reading. Section 2 also defends each field width, briefly, since the widths are the part of a binary
+format most worth questioning. The long form of that argument, and anything else that explains a
+choice rather than imposing a rule, is in [docs/why-these-widths.md](docs/why-these-widths.md),
+which is commentary and binds nobody.
 
 All multi-byte integers are unsigned and big-endian. There is no padding anywhere.
 
@@ -70,8 +72,10 @@ odd client-initiated and even server-initiated IDs (RFC 9113 §5.1.1), so its wi
 whole connection's history with half of it unusable, and its stated remedy for exhaustion is to open
 a new connection. This protocol has no server push, so the space is not split, and §1 permits
 wrapping, so the width decides only how often a wrap happens rather than when the connection has to
-be abandoned. At 24 bits a wrap is hours of sustained traffic. Those bits are also not free: the
-reserved bit plus 31 is the byte that makes the HTTP/2 header 9 where this one is 8.
+be abandoned. What it costs is the longest a single request may stay outstanding before it blocks a
+reuse of its ID, and at 24 bits that is hours of sustained traffic. The extra bits are not free
+either: a reserved bit plus 31 is four bytes where this ID is three, and that byte is the difference
+between a 9-byte header and an 8-byte one.
 
 Type, Flags, the 8-byte total and two smaller choices made the same way:
 [docs/why-these-widths.md](docs/why-these-widths.md).
