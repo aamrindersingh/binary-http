@@ -22,6 +22,11 @@ quietly assumed bserve's behaviour:
   4. the header block comes in a different order, with a name bserve
      never sends.
 
+It also answers /500 with a 500, which is the one status a real file
+server will not produce on demand. The slide says the client exits
+non-zero on 4xx *and* 5xx, and an untested half of that sentence is an
+untested half of that sentence.
+
 Usage: pyserve.py <port> [docroot]
 """
 import os
@@ -189,6 +194,13 @@ def serve_one(sock, docroot):
         path = hdrs.get(":path")
         if not path or not path.startswith("/"):
             respond(sock, req_id, 400, b"400 missing path\n")
+            continue
+
+        # A deliberate 5xx, so the client's 5xx branch is reachable from
+        # a test. bserve has no path that does this, which is why the
+        # foreign server is where it belongs.
+        if path == "/500":
+            respond(sock, req_id, 500, b"500 deliberate server error\n")
             continue
 
         full = os.path.realpath(os.path.join(docroot, path.lstrip("/")))

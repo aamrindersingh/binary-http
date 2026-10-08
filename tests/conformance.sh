@@ -182,6 +182,14 @@ if wait_for_port "$PORT2"; then
     ./bcurl "localhost:$PORT2/missing.html" >/dev/null 2>&1
     check "4xx from pyserve exits non-zero" "1" "$?" "SPEC 6"
 
+    # The slide says 4xx AND 5xx. A file server will not produce a 5xx
+    # on demand, so pyserve has a path that does.
+    ./bcurl "localhost:$PORT2/500" >/dev/null 2>&1
+    check "5xx exits non-zero too" "1" "$?" "SPEC 6"
+
+    S5=$(./bcurl -v "localhost:$PORT2/500" 2>&1 >/dev/null | grep -o 'status: 500')
+    check "and it really was a 500" "status: 500" "$S5" "SPEC 6"
+
     ./bcurl --send-unknown-frame "localhost:$PORT2/index.html" >/dev/null 2>&1
     check "pyserve skips an unknown type" "0" "$?" "SPEC 8"
 

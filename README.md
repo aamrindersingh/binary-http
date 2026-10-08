@@ -144,11 +144,16 @@ to have quietly assumed:
   PASS  and sends no content-length        0         SPEC 6
   PASS  literal header name decoded        1         SPEC 4
   PASS  4xx from pyserve exits non-zero    1         SPEC 6
+  PASS  5xx exits non-zero too             1         SPEC 6
+  PASS  and it really was a 500            status: 500  SPEC 6
   PASS  pyserve skips an unknown type      0         SPEC 8
 ```
 
 Four of those assert that the two servers really do differ, because a cross-implementation test
-where both ends happen to behave identically proves nothing. The full interop matrix is every pair
+where both ends happen to behave identically proves nothing. `pyserve` also answers `/500` with a
+500, because a file server will not produce a 5xx on demand and the brief asks the client to exit
+non-zero on 4xx **and** 5xx. The 5xx half of that sentence was implemented but untested until this
+server existed. The full interop matrix is every pair
 except Python to Python:
 
 | | to `bserve` (C) | to `pyserve` (Python) |
@@ -162,7 +167,7 @@ except Python to Python:
 
 ```bash
 make                       # both binaries, -Wall -Wextra -Wpedantic -Wconversion, clean
-make test                  # 33 conformance checks
+make test                  # 35 conformance checks
 make asan                  # rebuild under AddressSanitizer + UBSan
 make fuzz                  # 400 malformed cases, starts its own server
 make independence          # proves the two codecs share no code
@@ -224,17 +229,17 @@ if (connects_made > 0) {
 
 ## Testing
 
-`make test` runs 33 checks: 31 traceable to a MUST in the spec, plus two that guard the project's
+`make test` runs 35 checks: 33 traceable to a MUST in the spec, plus two that guard the project's
 own claims, described below.
 
 ```
-  33 passed, 0 failed
+  35 passed, 0 failed
 ```
 
 | Group | Covers |
 |---|---|
 | interop | body returned, exit codes, 5 requests over 1 connection, IDs increase from 1, IDs wrap to 1 and never to 0 |
-| status codes | 200, 403 on traversal, 404, 405, 400 on a request with ID 0 |
+| status codes | 200, 403 on traversal, 404, 405, 400 on a request with ID 0, 500 from a foreign server |
 | header decoding | truncated block, trailing bytes, unknown static index, zero-length literal name |
 | limits | an oversized frame gets `GOAWAY` reason 2 |
 | forward compat | unknown frame type skipped, both directions |
@@ -253,7 +258,7 @@ Additionally:
 
 ```
 $ make asan && make test && make fuzz
-  33 passed, 0 failed
+  35 passed, 0 failed
 OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports in
 tests/fuzz-server.log
 ```
@@ -295,7 +300,7 @@ client/
   bcurl.c                   one connection, build request, hexdump
   wire.c    wire.h          the client's codec, written separately
 tests/
-  conformance.sh            33 checks against the spec
+  conformance.sh            35 checks against the spec
   rawframe.py               a third codec, as a client, for malformed frames
   pyserve.py                a fourth, as a server, for bcurl to prove itself against
   capture.py                generates the annotated hexdump
