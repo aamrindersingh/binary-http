@@ -1,0 +1,2 @@
+Test fixture. Lives OUTSIDE ./www so the path traversal case in
+tests/rawframe.py has something to try to reach. It never should.

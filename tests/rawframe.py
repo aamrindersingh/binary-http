@@ -190,7 +190,7 @@ def c_unknown(port):
 @case("traversal")
 def c_traversal(port):
     """Escaping the document root. SPEC 6 -> 403."""
-    fs = send_and_read(port, get_request("/../secret.txt"))
+    fs = send_and_read(port, get_request("/../outside-docroot.txt"))
     return status_of(fs[0]) if fs else None
 
 
