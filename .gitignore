@@ -1,0 +1,6 @@
+bserve
+bcurl
+*.o
+*.dSYM/
+tests/tmp/
+tests/*.log
