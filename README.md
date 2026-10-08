@@ -162,10 +162,11 @@ except Python to Python:
 
 ```bash
 make                       # both binaries, -Wall -Wextra -Wpedantic -Wconversion, clean
-make test                  # 32 conformance checks
+make test                  # 33 conformance checks
 make asan                  # rebuild under AddressSanitizer + UBSan
 make fuzz                  # 400 malformed cases, starts its own server
 make independence          # proves the two codecs share no code
+make statictable           # proves spec and all 4 impls share one table
 ```
 
 Server:
@@ -223,10 +224,11 @@ if (connects_made > 0) {
 
 ## Testing
 
-`make test` runs 32 checks: 31 traceable to a MUST in the spec, plus the independence check below.
+`make test` runs 33 checks: 31 traceable to a MUST in the spec, plus two that guard the project's
+own claims, described below.
 
 ```
-  32 passed, 0 failed
+  33 passed, 0 failed
 ```
 
 | Group | Covers |
@@ -238,6 +240,7 @@ if (connects_made > 0) {
 | forward compat | unknown frame type skipped, both directions |
 | ID exhaustion | IDs wrap from `0xFFFFFF` to 1 and never to 0, and the server accepts a wrapped ID |
 | cross-implementation | `bcurl` against a Python server: split body, no `content-length`, literal header name |
+| static table | the spec and all four implementations agree index for index |
 | independence | the two codecs still share no code, by `tests/independence.py` |
 | pipelining | three requests in flight, IDs preserved |
 
@@ -250,7 +253,7 @@ Additionally:
 
 ```
 $ make asan && make test && make fuzz
-  32 passed, 0 failed
+  33 passed, 0 failed
 OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports in
 tests/fuzz-server.log
 ```
@@ -292,12 +295,13 @@ client/
   bcurl.c                   one connection, build request, hexdump
   wire.c    wire.h          the client's codec, written separately
 tests/
-  conformance.sh            32 checks against the spec
+  conformance.sh            33 checks against the spec
   rawframe.py               a third codec, as a client, for malformed frames
   pyserve.py                a fourth, as a server, for bcurl to prove itself against
   capture.py                generates the annotated hexdump
   fuzz.py                   400 malformed cases, owns its server
   independence.py           measures how separate the two codecs are
+  statictable.py            checks all five copies of SPEC 4's table
 www/                        document root
 ```
 

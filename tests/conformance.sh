@@ -196,6 +196,11 @@ else
 fi
 
 echo
+echo "one wire format, five documents"
+python3 tests/statictable.py >/dev/null 2>&1
+check "spec and all 4 impls share a table" "0" "$?" "SPEC 4"
+
+echo
 echo "independence of the two codecs"
 python3 tests/independence.py >/dev/null 2>&1
 check "server and client share no code" "0" "$?" "README"

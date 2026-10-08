@@ -106,13 +106,21 @@ rejecting is what lets version 2 add a flag without breaking version 1.
 HPACK's first two mechanisms and nothing more: a **static table** of the ten names this protocol
 actually sends, and **length-prefixed literals** for everything else. No dynamic table, no Huffman.
 
-| # | Name | | # | Name |
-|---|---|---|---|---|
-| 1 | `:method` | | 6 | `content-length` |
-| 2 | `:path` | | 7 | `content-type` |
-| 3 | `host` | | 8 | `server` |
-| 4 | `user-agent` | | 9 | `date` |
-| 5 | `accept` | | 10 | `connection` |
+| Index | Name | Sent by |
+|---|---|---|
+| 1 | `:method` | client |
+| 2 | `:path` | client |
+| 3 | `host` | client |
+| 4 | `user-agent` | client |
+| 5 | `accept` | client |
+| 6 | `content-length` | server |
+| 7 | `content-type` | server |
+| 8 | `server` | server |
+| 9 | `date` | server |
+| 10 | `connection` | either |
+
+Index 0 does not exist. These numbers are part of the wire format, so an implementation MUST use
+exactly this order.
 
 A header block is a count byte followed by exactly that many entries:
 

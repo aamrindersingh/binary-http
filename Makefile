@@ -33,8 +33,12 @@ fuzz: all
 independence:
 	@python3 tests/independence.py
 
+# Checks the spec and all four implementations share one static table.
+statictable:
+	@python3 tests/statictable.py
+
 clean:
 	rm -f bserve bcurl
 	rm -rf *.dSYM tests/tmp tests/*.log
 
-.PHONY: all asan test fuzz independence clean
+.PHONY: all asan test fuzz independence statictable clean
