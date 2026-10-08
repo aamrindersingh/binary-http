@@ -26,7 +26,52 @@ check() { # check <name> <expected> <actual> <spec-ref>
     fi
 }
 
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; wait 2>/dev/null; }
+
+# A fixed sleep is a guess about how fast a machine is, and this suite has
+# already been bitten once by assuming how a peer behaves. These wait for
+# the thing itself. The sanitized build is slow enough to start and stop
+# that the difference is not theoretical: with `disown` plus a bare
+# `wait`, the server restart below raced its own predecessor and four
+# checks failed under `make asan` while passing on the plain build.
+port_open() { # port_open <port>
+    (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null && exec 3<&- 2>/dev/null
+}
+
+wait_for_port() { # wait_for_port <port>
+    local i=0
+    while [ "$i" -lt 150 ]; do
+        port_open "$1" && return 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+stop_server() {
+    [ -n "${SRV:-}" ] || return 0
+    kill "$SRV" 2>/dev/null
+    { wait "$SRV"; } 2>/dev/null
+    SRV=""
+}
+
+start_server() { # start_server <logfile> [extra bserve args...]
+    local log=$1
+    shift
+    ./bserve ./www "$PORT" -v "$@" > "$log" 2>&1 &
+    SRV=$!
+    if ! wait_for_port "$PORT"; then
+        echo "server failed to start on port $PORT:" >&2
+        cat "$log" >&2
+        exit 1
+    fi
+}
+
+cleanup() {
+    [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null
+    [ -n "${PYS:-}" ] && kill "$PYS" 2>/dev/null
+    rm -f tests/tmp-py.out tests/tmp-c.out
+    { wait; } 2>/dev/null
+}
 trap cleanup EXIT
 
 if [ ! -x ./bserve ] || [ ! -x ./bcurl ]; then
@@ -34,15 +79,7 @@ if [ ! -x ./bserve ] || [ ! -x ./bcurl ]; then
     exit 2
 fi
 
-./bserve ./www "$PORT" -v > tests/server.log 2>&1 &
-SRV=$!
-sleep 1
-
-if ! kill -0 "$SRV" 2>/dev/null; then
-    echo "server failed to start:" >&2
-    cat tests/server.log >&2
-    exit 1
-fi
+start_server tests/server.log
 
 echo
 echo "BHTTP/1 conformance, port $PORT"
@@ -103,10 +140,8 @@ check "server skips unknown type" "200" "$got" "SPEC 8"
 ./bcurl --send-unknown-frame "localhost:$PORT/index.html" >/dev/null 2>&1
 check "server skips it from bcurl too" "0" "$?" "SPEC 8"
 
-kill "$SRV" 2>/dev/null; wait 2>/dev/null
-./bserve ./www "$PORT" -v --inject-unknown > tests/server-inject.log 2>&1 &
-SRV=$!
-sleep 1
+stop_server
+start_server tests/server-inject.log --inject-unknown
 SKIPPED=$(./bcurl -v -n 3 "localhost:$PORT/hello.txt" 2>&1 >/dev/null | grep -c "per SPEC 8")
 check "client skips unknown type" "3" "$SKIPPED" "SPEC 8"
 
@@ -117,6 +152,48 @@ echo
 echo "pipelining"
 got=$(python3 tests/rawframe.py "$PORT" pipelined 2>/dev/null)
 check "3 in flight, IDs preserved" "1,2,3" "$got" "SPEC 1"
+
+echo
+echo "bcurl against a server it has never met"
+PORT2=$((PORT + 1))
+python3 tests/pyserve.py "$PORT2" ./www > tests/pyserve.log 2>&1 &
+PYS=$!
+
+if wait_for_port "$PORT2"; then
+    ./bcurl "localhost:$PORT2/index.html" > tests/tmp-py.out 2>/dev/null
+    check "2xx from pyserve exits zero" "0" "$?" "SPEC 6"
+
+    cmp -s tests/tmp-py.out ./www/index.html
+    check "body survives a 2-frame split" "0" "$?" "SPEC 6"
+
+    ./bcurl "localhost:$PORT/index.html" > tests/tmp-c.out 2>/dev/null
+    cmp -s tests/tmp-py.out tests/tmp-c.out
+    check "both servers give identical bytes" "0" "$?" "SPEC 6"
+
+    NDATA=$(./bcurl -v "localhost:$PORT2/index.html" 2>&1 >/dev/null | grep -c '^< DATA')
+    check "pyserve really splits the body" "2" "$NDATA" "SPEC 6"
+
+    NCL=$(./bcurl -v "localhost:$PORT2/index.html" 2>&1 >/dev/null | grep -c 'content-length')
+    check "and sends no content-length" "0" "$NCL" "SPEC 6"
+
+    LIT=$(./bcurl -v "localhost:$PORT2/index.html" 2>&1 >/dev/null | grep -c 'x-served-by: python')
+    check "literal header name decoded" "1" "$LIT" "SPEC 4"
+
+    ./bcurl "localhost:$PORT2/missing.html" >/dev/null 2>&1
+    check "4xx from pyserve exits non-zero" "1" "$?" "SPEC 6"
+
+    ./bcurl --send-unknown-frame "localhost:$PORT2/index.html" >/dev/null 2>&1
+    check "pyserve skips an unknown type" "0" "$?" "SPEC 8"
+
+    kill "$PYS" 2>/dev/null
+    { wait "$PYS"; } 2>/dev/null
+    PYS=""
+    rm -f tests/tmp-py.out tests/tmp-c.out
+else
+    echo "  pyserve never started listening, see tests/pyserve.log" >&2
+    cat tests/pyserve.log >&2
+    FAIL=$((FAIL + 1))
+fi
 
 echo
 echo "independence of the two codecs"

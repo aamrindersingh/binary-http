@@ -4,3 +4,4 @@ bcurl
 *.dSYM/
 tests/tmp/
 tests/*.log
+tests/tmp-*.out

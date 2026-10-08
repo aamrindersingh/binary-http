@@ -1,6 +1,6 @@
 # BHTTP/1: a binary request/response protocol
 
-**Version 1** · Amrinder Singh (24BCS10596) · reference implementations `bserve` and `bcurl`
+**Version 1.** Amrinder Singh, 24BCS10596. Reference implementations `bserve` and `bcurl`.
 
 Everything a second implementer needs is in this document; the reference code is not required
 reading. Section 2 also defends each field width, briefly, since the widths are the part of a binary

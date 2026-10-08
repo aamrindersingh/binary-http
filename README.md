@@ -1,6 +1,6 @@
 # BHTTP/1: HTTP, in binary
 
-**Amrinder Singh · 24BCS10596**
+**Amrinder Singh, 24BCS10596**
 
 A binary request/response protocol, specified from scratch, with a server and a client that were
 written independently against the specification.
@@ -116,10 +116,45 @@ fails if a common run ever passes 8 lines or similarity passes 40%, and `make te
 separation cannot quietly rot. The `Makefile` also compiles them as two programs with no shared
 object file and no common `-I` path, so it cannot rot by accident either.
 
-There is also a third implementation of the wire format in
-[`tests/rawframe.py`](tests/rawframe.py), written from the spec in Python, used to generate the
-malformed frames a well-behaved client cannot produce. A bug common to both C codecs would still be
-caught by it.
+### The harder direction
+
+Two independent codecs show the sides were not copied from each other, and
+[`tests/rawframe.py`](tests/rawframe.py) is a third client, written from the spec in Python, which
+sends the malformed frames a well-behaved client cannot produce. Both of those test the **server**
+against a stranger. Neither tests the client, and the sentence above is about clients.
+
+So [`tests/pyserve.py`](tests/pyserve.py) is a BHTTP/1 **server** in Python, also written from the
+spec, and it answers differently from `bserve` on purpose, in the four ways `bcurl` was most likely
+to have quietly assumed:
+
+| | `bserve` (C) | `pyserve` (Python) |
+|---|---|---|
+| body framing | one `DATA` frame | **two**, so a client that treats the first as the whole body truncates |
+| `content-length` | sent | **not sent at all**, which is what SPEC §6 calling it advisory is worth |
+| header names | all static indices | one **length-prefixed literal**, `x-served-by` |
+| header set | `content-type`, `content-length`, `server`, `date` | different names, different order |
+
+`bcurl` had never seen any of that, and the bytes it hands to stdout are identical either way:
+
+```
+  PASS  2xx from pyserve exits zero        0         SPEC 6
+  PASS  body survives a 2-frame split      0         SPEC 6
+  PASS  both servers give identical bytes  0         SPEC 6
+  PASS  pyserve really splits the body     2         SPEC 6
+  PASS  and sends no content-length        0         SPEC 6
+  PASS  literal header name decoded        1         SPEC 4
+  PASS  4xx from pyserve exits non-zero    1         SPEC 6
+  PASS  pyserve skips an unknown type      0         SPEC 8
+```
+
+Four of those assert that the two servers really do differ, because a cross-implementation test
+where both ends happen to behave identically proves nothing. The full interop matrix is every pair
+except Python to Python:
+
+| | to `bserve` (C) | to `pyserve` (Python) |
+|---|---|---|
+| from `bcurl` (C) | tested | tested |
+| from `rawframe.py` (Python) | tested | not needed, both are mine in the same language |
 
 ---
 
@@ -127,7 +162,7 @@ caught by it.
 
 ```bash
 make                       # both binaries, -Wall -Wextra -Wpedantic -Wconversion, clean
-make test                  # 24 conformance checks
+make test                  # 32 conformance checks
 make asan                  # rebuild under AddressSanitizer + UBSan
 make fuzz                  # 400 malformed cases, starts its own server
 make independence          # proves the two codecs share no code
@@ -188,10 +223,10 @@ if (connects_made > 0) {
 
 ## Testing
 
-`make test` runs 24 checks: 23 traceable to a MUST in the spec, plus the independence check below.
+`make test` runs 32 checks: 31 traceable to a MUST in the spec, plus the independence check below.
 
 ```
-  24 passed, 0 failed
+  32 passed, 0 failed
 ```
 
 | Group | Covers |
@@ -202,6 +237,7 @@ if (connects_made > 0) {
 | limits | an oversized frame gets `GOAWAY` reason 2 |
 | forward compat | unknown frame type skipped, both directions |
 | ID exhaustion | IDs wrap from `0xFFFFFF` to 1 and never to 0, and the server accepts a wrapped ID |
+| cross-implementation | `bcurl` against a Python server: split body, no `content-length`, literal header name |
 | independence | the two codecs still share no code, by `tests/independence.py` |
 | pipelining | three requests in flight, IDs preserved |
 
@@ -214,7 +250,7 @@ Additionally:
 
 ```
 $ make asan && make test && make fuzz
-  24 passed, 0 failed
+  32 passed, 0 failed
 OK: 400 cases sent, 0 refused mid-write, server still accepting, no sanitizer reports in
 tests/fuzz-server.log
 ```
@@ -256,8 +292,9 @@ client/
   bcurl.c                   one connection, build request, hexdump
   wire.c    wire.h          the client's codec, written separately
 tests/
-  conformance.sh            24 checks against the spec
-  rawframe.py               a third codec, for malformed frames
+  conformance.sh            32 checks against the spec
+  rawframe.py               a third codec, as a client, for malformed frames
+  pyserve.py                a fourth, as a server, for bcurl to prove itself against
   capture.py                generates the annotated hexdump
   fuzz.py                   400 malformed cases, owns its server
   independence.py           measures how separate the two codecs are
